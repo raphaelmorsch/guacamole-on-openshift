@@ -1,0 +1,157 @@
+# ServiceAccount para permitir execução como root (necessário para guacamole/guacamole)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: guacamole-sa
+---
+# Banco de dados Postgres para Guacamole
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: guacamole-postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guacamole-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guacamole-postgres
+  template:
+    metadata:
+      labels:
+        app: guacamole-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:14
+          env:
+            - name: POSTGRES_DB
+              value: guacamole_db
+            - name: POSTGRES_USER
+              value: guac_user
+            - name: POSTGRES_PASSWORD
+              value: guac_pass
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: guacamole-postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: guacamole-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# guacd (daemon que faz proxy para RDP/VNC/SSH)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guacd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guacd
+  template:
+    metadata:
+      labels:
+        app: guacd
+    spec:
+      containers:
+        - name: guacd
+          image: guacamole/guacd:1.5.3
+          ports:
+            - containerPort: 4822
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guacd
+spec:
+  selector:
+    app: guacd
+  ports:
+    - port: 4822
+      targetPort: 4822
+---
+# Guacamole Web App
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guacamole
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guacamole
+  template:
+    metadata:
+      labels:
+        app: guacamole
+    spec:
+      serviceAccountName: guacamole-sa
+      containers:
+        - name: guacamole
+          image: guacamole/guacamole:1.5.3
+          env:
+            - name: GUACD_HOSTNAME
+              value: guacd
+            - name: POSTGRESQL_HOSTNAME
+              value: postgres
+            - name: POSTGRESQL_DATABASE
+              value: guacamole_db
+            - name: POSTGRESQL_USER
+              value: guac_user
+            - name: POSTGRESQL_PASSWORD
+              value: guac_pass
+            - name: HOME
+              value: /home/guacamole
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - mountPath: /home/guacamole
+              name: guacamole-home
+      volumes:
+        - name: guacamole-home
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guacamole
+spec:
+  selector:
+    app: guacamole
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: guacamole
+spec:
+  to:
+    kind: Service
+    name: guacamole
+  port:
+    targetPort: 80
